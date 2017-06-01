@@ -8,6 +8,8 @@
 
 /* Ім'я вхідного файлу */
 const char *input_file_MA = "MA.txt";
+const char *input_file_b = "b.txt";
+const char *output_file_x = "x.txt";
 
 /* Тег повідомленя, що містить стовпець матриці */
 const int COLUMN_TAG = 0x1;
@@ -25,13 +27,18 @@ int main(int argc, char *argv[])
 
     /* Зчитування даних в задачі 0 */
     struct my_matrix *MA;
+    struct my_vector *b;
     int N;
     if(rank == 0)
     {
         MA = read_matrix(input_file_MA);
+        b = read_vector(input_file_b);
 
         if(MA->rows != MA->cols) {
             fatal_error("Matrix is not square!", 4);
+        }
+        if (MA->rows != b->size) {
+            fatal_error("Dimensions of matrix and vector don’t match!", 5);
         }
         N = MA->rows;
     }
