@@ -19,8 +19,8 @@ int main(int argc, char *argv[])
     MPI_Init(&argc, &argv);
 
     /* Отримання загальної кількості задач та рангу поточної задачі */
-    int np, rank;
-    MPI_Comm_size(MPI_COMM_WORLD, &np);
+    int tasks_number, rank;
+    MPI_Comm_size(MPI_COMM_WORLD, &tasks_number);
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 
     /* Зчитування даних в задачі 0 */
@@ -41,12 +41,12 @@ int main(int argc, char *argv[])
 
     /* Обчислення кількості стовпців, які будуть зберігатися в кожній задачі та
      * виділення пам'яті для їх зберігання */
-    int part = N / np;
-    struct my_matrix *MAh = matrix_alloc(N, part, .0);
+    int rows_count_for_one_task = N / tasks_number;
+    struct my_matrix *MAh = matrix_alloc(N, rows_count_for_one_task, .0);
 
     /* Створення та реєстрація типу даних для стовпця елементів матриці */
     MPI_Datatype matrix_columns;
-    MPI_Type_vector(N*part, 1, np, MPI_DOUBLE, &matrix_columns);
+    MPI_Type_vector(N*rows_count_for_one_task, 1, tasks_number, MPI_DOUBLE, &matrix_columns);
     MPI_Type_commit(&matrix_columns);
 
     /* Створення та реєстрація типу даних для структури вектора */
@@ -62,60 +62,60 @@ int main(int argc, char *argv[])
     /* Розсилка стовпців матриці з задачі 0 в інші задачі */
     if(rank == 0)
     {
-        for(int i = 1; i < np; i++)
+        for(int i = 1; i < tasks_number; i++)
         {
             MPI_Send(&(MA->data[i]), 1, matrix_columns, i, COLUMN_TAG, MPI_COMM_WORLD);
         }
         /* Копіювання елементів стовпців даної задачі */
-        for(int i = 0; i < part; i++)
+        for(int i = 0; i < rows_count_for_one_task; i++)
         {
-            int col_index = i*np;
+            int col_index = i*tasks_number;
             for(int j = 0; j < N; j++)
             {
-                MAh->data[j*part + i] = MA->data[j*N + col_index];
+                MAh->data[j*rows_count_for_one_task + i] = MA->data[j*N + col_index];
             }
         }
         free(MA);
     }
     else
     {
-        MPI_Recv(MAh->data, N*part, MPI_DOUBLE, 0, COLUMN_TAG, MPI_COMM_WORLD,
+        MPI_Recv(MAh->data, N*rows_count_for_one_task, MPI_DOUBLE, 0, COLUMN_TAG, MPI_COMM_WORLD,
                  MPI_STATUS_IGNORE);
     }
 
     /* Поточне значення вектору l_i */
     struct my_vector *current_l = vector_alloc(N, .0);
     /* Частина стовпців матриці L */
-    struct my_matrix *MLh = matrix_alloc(N, part, .0);
+    struct my_matrix *MLh = matrix_alloc(N, rows_count_for_one_task, .0);
 
     /* Основний цикл ітерації (кроки) */
     for(int step = 0; step < N-1; step++)
     {
         /* Вибір задачі, що містить стовпець з ведучім елементом та обчислення
          * поточних значень вектору l_i */
-        if(step % np == rank)
+        if(step % tasks_number == rank)
         {
-            int col_index = (step - (step % np)) / np;
-            MLh->data[step*part + col_index] = 1.;
+            int col_index = (step - (step % tasks_number)) / tasks_number;
+            MLh->data[step*rows_count_for_one_task + col_index] = 1.;
             for(int i = step+1; i < N; i++)
             {
-                MLh->data[i*part + col_index] = MAh->data[i*part + col_index] /
-                                                MAh->data[step*part + col_index];
+                MLh->data[i*rows_count_for_one_task + col_index] = MAh->data[i*rows_count_for_one_task + col_index] /
+                                                MAh->data[step*rows_count_for_one_task + col_index];
             }
             for(int i = 0; i < N; i++)
             {
-                current_l->data[i] = MLh->data[i*part + col_index];
+                current_l->data[i] = MLh->data[i*rows_count_for_one_task + col_index];
             }
         }
         /* Розсилка поточних значень l_i */
-        MPI_Bcast(current_l, 1, vector_struct, step % np, MPI_COMM_WORLD);
+        MPI_Bcast(current_l, 1, vector_struct, step % tasks_number, MPI_COMM_WORLD);
 
         /* Модифікація стовпців матриці МА відповідно до поточного l_i */
         for(int i = step+1; i < N; i++)
         {
-            for(int j = 0; j < part; j++)
+            for(int j = 0; j < rows_count_for_one_task; j++)
             {
-                MAh->data[i*part + j] -= MAh->data[step*part + j] * current_l->data[i];
+                MAh->data[i*rows_count_for_one_task + j] -= MAh->data[step*rows_count_for_one_task + j] * current_l->data[i];
             }
         }
     }
@@ -123,16 +123,18 @@ int main(int argc, char *argv[])
     /* Обислення добутку елементів, які знаходяться на головній діагоналі
      * основної матриці (з урахуванням номеру стовпця в задачі) */
     double prod = 1.;
-    for(int i = 0; i < part; i++)
+    for(int i = 0; i < rows_count_for_one_task; i++)
     {
-        int row_index = i*np + rank;
-        prod *= MAh->data[row_index*part + i];
+        int row_index = i*tasks_number + rank;
+        prod *= MAh->data[row_index*rows_count_for_one_task + i];
+        printf("prod=%f\n", prod);
     }
 
     /* Згортка добутків елементів головної діагоналі та вивід результату в задачі 0 */
     if(rank == 0)
     {
         MPI_Reduce(MPI_IN_PLACE, &prod, 1, MPI_DOUBLE, MPI_PROD, 0, MPI_COMM_WORLD);
+        printf("prod=%f\n", prod);
         printf("%lf", prod);
     }
     else
